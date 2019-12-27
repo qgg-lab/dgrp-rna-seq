@@ -1,0 +1,18 @@
+# This is an example of the batch structure for DGRPseq projects
+# Make sure to remove ALL comment lines (those starting '#') BEFORE using this file!
+# The file should contain a row for each library to process in this batch
+# Each row should have 6 tab-delimited columns:
+# 1) Full library name (everything before the .fastq.gz in the file name)
+# 2) Sample ID (there can be multiple libraries for the same sample if it was resequenced)
+# 3) Flowcell ID
+# 4) Lane number
+# 5) Barcode
+# 6) Sequencing date
+# A typical way to organize batches is to have a separate batch for each flowcell
+# You should edit this file in an editor that will not change the linebreak style
+# for example whatever program you use to edit scripts
+# If you edit the file in Excel, make sure to change it back to Unix linebreaks
+# Several example lines are shown below
+# !!! Make sure to remove ALL comment lines (from this one up!) before using this in your analysis !!!
+229_1A_5wk_CCGTCC_L002_R1_C8B28ANXX	229_1A_5wk	C8B28ANXX	2	CCGTCC	03/11/16
+73_3A_5wk_GGTAGC_L002_R1_C8B28ANXX	73_3A_5wk	C8B28ANXX	2	GGTAGC	03/11/16

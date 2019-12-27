@@ -1,0 +1,180 @@
+#
+# Commands for running expression analysis
+#
+
+
+#------------------------------
+# EXPRESSION NORMALIZATION
+#
+
+# Only need to do this once, FPKM values and RARE/LOW flags are used in all subsequent analysis
+
+# Run script to normalize read counts for library depth and gene length
+# This step should only take a few minutes to run
+# NEW: The CUTOFF=FIT option uses a mixture model to automatically find a good expression cutoff for marking LOW/RARE genes
+
+mkdir -p expression
+
+normalize_expression.R COUNTS=htseq/combined_samples_gene_counts.txt GENES=/home/ljeveret/Resources/FlyBase/Dmel_r5.57_FB2014_03/DGRP/BaselineRNA/combined-gene-info.txt OUTDIR=expression CUTOFF=FIT &> expression/normalize_expression.Rout
+
+
+#------------------------------
+# FIT GENETIC VARIANCE MODELS
+#
+
+# This is used to identify which genes are significantly genetically variable and extract line means.
+
+# Estimate H^2 value for each gene, separately for males and females
+# This step also detects and corrects for Wolbachia effects
+# The -c 10 tells it to use 10 CPUs, and parallelize the regression model steps
+# This can be adjusted to anywhere between 1 (no parallelization) and 20 (whole node) on hyperion
+# NEW PARAMETERS:
+# FILTER=LOW Removes all genes flagged as "LOW" by normalize_expression.R script
+# LINEREG parameter points to a file with variant rate data to adjust for potential alignment bias
+# TAG=VR just adds "_VR_" to output file names to denote correction for variant rate
+# OUTDIR is altered b/c it's best to put output in genVar/ subdirectory of expression/ (or wherever normalized expression table is) to separate trait correlation, MMC, etc. analyses
+
+sbatch -c 10 -o expression/gen_var_model.Rout gen_var_model.R EXPR=expression/combined_samples_gene_fpkm.txt FILTER=LOW LINEREG=/home/ljeveret/Resources/FlyBase/Dmel_r5.57_FB2014_03/DGRP/BaselineRNA/combined_gene_variant_rates.txt TAG=VR OUTDIR=expression/genVar/
+
+
+# Estimate H^2 value for each gene using pooled sex model
+# (Can run at the same time as step above)
+
+sbatch -c 10 -o expression/gen_var_model_pooled.Rout gen_var_model.R POOLED=TRUE EXPR=expression/combined_samples_gene_fpkm.txt FILTER=LOW LINEREG=/home/ljeveret/Resources/FlyBase/Dmel_r5.57_FB2014_03/DGRP/BaselineRNA/combined_gene_variant_rates.txt TAG=VR OUTDIR=expression/genVar/
+
+
+#------------------------------
+# MMC CLUSTERING
+#
+
+# First filter the line means to only those worth clustering (drop low expression, low variance, etc.)
+# Any of these filter criteria can be adjusted or removed, log file will tell you how many genes are dropped due to each filter
+# FILTER=LOW,RARE - Removes both LOW and RARE genes before clustering (can change to FILTER=LOW to keep RARE genes)
+# AVGEXPR=0 - Remove genes with average expression < 0 (remember this is log2 scale, so 0 = 1 FPKM)
+# H2=0.35 - Remove genes with H^2 < 0.35
+# VAR=0.01 - Remove genes with variance of the line means < 0.01 (removes genes that are technically signif genetically variable, but have very weak variance)
+# FDR=0.01 - Remove genes with FDR > 0.01 from the genetic variance model
+
+mkdir -p expression/mmc
+filter_line_means.R EXPR=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_F_line_means.txt H2FILE=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_model_results.txt FILTER=RARE,LOW AVGEXPR=0 H2=0.35 FDR=0.01 VAR=0.01 &> expression/mmc/filter_F_line_means_mmc.Rout
+filter_line_means.R EXPR=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_M_line_means.txt H2FILE=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_model_results.txt FILTER=RARE,LOW AVGEXPR=0 H2=0.35 FDR=0.01 VAR=0.01 &> expression/mmc/filter_M_line_means_mmc.Rout
+
+
+# Cluster line means from the within sex models
+# Remove the --fast parameter to do higher resolution grid search of sigma cutoff (much slower)
+# Best idea is to run with the --fast parameter first, and then drop the parameter for final results
+# Also note that MMC is run separately on the Female and Male line means at this stage
+# These can both be run at the same time if nodes are available
+# The "--exclusive" parameter can be removed for smaller sets of genes (<1k) but in general this is to prevent multiple jobs from using all the memory available on the node
+
+sbatch --exclusive -o expression/mmc/combined_samples_gene_fpkm_F_mmc.log run_mmc.sh --fast expression/mmc/combined_samples_gene_fpkm_VR_WolAdj_F_line_means.csv
+sbatch --exclusive -o expression/mmc/combined_samples_gene_fpkm_M_mmc.log run_mmc.sh --fast expression/mmc/combined_samples_gene_fpkm_VR_WolAdj_M_line_means.csv
+
+
+# Draw slightly improved heatmaps of the cluster output 
+# (this will overwrite some of the original png files from MMC)
+# Currently this can NOT be run using sbatch because ghostscript is not installed on job nodes
+# Should ask Chris to fix this at some point...
+
+plot_mmc_results.R EXPR=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_F_line_means.txt MMC=expression/mmc/combined_samples_gene_fpkm_VR_WolAdj_F_mmc.csv &> expression/mmc/combined_samples_gene_fpkm_Wol_F_plot_mmc_results.Rout
+plot_mmc_results.R EXPR=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_M_line_means.txt MMC=expression/mmc/combined_samples_gene_fpkm_VR_WolAdj_M_mmc.csv &> expression/mmc/combined_samples_gene_fpkm_Wol_M_plot_mmc_results.Rout
+
+
+
+#------------------------------
+# WGCNA CLUSTERING
+#
+
+# This is an alternative approach to using MMC. 
+# The basic steps are the same (separately for each within sex model)
+
+# 1) Filter out genes that should not be included in clustering
+# This is the same script as for MMC, but use the MODE=wgcna parameter
+# All other threshold parameters work the same as for MMC
+
+mkdir -p expression/wgcna
+filter_line_means.R MODE=wgcna EXPR=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_F_line_means.txt H2FILE=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_model_results.txt FILTER=RARE,LOW AVGEXPR=0 VAR=0.05 &> expression/wgcna/filter_all_F.Rout
+filter_line_means.R MODE=wgcna EXPR=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_M_line_means.txt H2FILE=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_model_results.txt FILTER=RARE,LOW AVGEXPR=0 VAR=0.05 &> expression/wgcna/filter_all_M.Rout
+
+
+# 2) Run the main WGCNA clustering analysis
+# This will produce some WGCNA-style figures, but outputs the clusters in the same format as MMC
+# Note that cluster 0 = did not fit into any cluster
+
+sbatch -c 10 -o expression/wgcna/run_wgcna_F.Rout run_wgcna.R EXPR=expression/wgcna/combined_samples_gene_fpkm_VR_WolAdj_F_line_means_wgcna.txt
+sbatch -c 10 -o expression/wgcna/run_wgcna_M.Rout run_wgcna.R EXPR=expression/wgcna/combined_samples_gene_fpkm_VR_WolAdj_M_line_means_wgcna.txt
+
+
+# 3) Draw MMC-style heatmaps (Optional)
+# This uses the same script as for MMC
+# Currently can't run this with sbatch because of ghostscript installation problem
+
+plot_mmc_results.R EXPR=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_F_line_means.txt MMC=expression/wgcna/combined_samples_gene_fpkm_VR_WolAdj_F_wgcna.csv &> expression/wgcna/combined_samples_gene_fpkm_Wol_F_plot_wgcna_results.Rout
+plot_mmc_results.R EXPR=expression/genVar/combined_samples_gene_fpkm_VR_WolAdj_M_line_means.txt MMC=expression/wgcna/combined_samples_gene_fpkm_VR_WolAdj_M_wgcna.csv &> expression/wgcna/combined_samples_gene_fpkm_Wol_M_plot_wgcna_results.Rout
+
+
+
+#------------------------------
+# eQTL MAPPING
+#
+
+# WARNING: IF RE-RUNNING THIS ANALYSIS, MAKE SURE TO CLEAN UP ALL FILES ENDING IN .qassoc FROM PREVIOUS ANALYSIS!!!!
+# (Alternatively you can just delete the entire plink/ subfolder)
+
+# Re-run the genetic variance model with additional covariates for eQTL (Inversions, Genetic PCs)
+
+sbatch -c 10 -o expression/gen_var_model_eQTL.Rout gen_var_model.R EXPR=expression/combined_samples_gene_fpkm.txt FILTER=LOW EQTL=T LINEREG=/home/ljeveret/Resources/FlyBase/Dmel_r5.57_FB2014_03/DGRP/BaselineRNA/combined_gene_variant_rates.txt TAG=VR OUTDIR=expression/genVar/
+
+# Setup genotype input files for plink
+# This ONLY needs to be run once for ALL eQTL analyses (including microbiome, transposon, etc.)
+# The only reason to re-run is if additional samples are added that change which lines are included
+# By default this script uses sample_master_table.txt to determine which lines are included
+#  To use a different file, add parameter --samples=[FILENAME] to use a different master table
+#  Make sure that whichever sample table you use includes ONLY the final set of samples for analysis
+#  And has the LINE number in the 5th column (standard for tables generated by scripts included here)
+
+setup_plink.sh
+
+# Map all SNPs to all genes (including NTRs)
+# This only needs to be run ONCE for all analyses, but must be re-run any time the freeze2.(X)line.common.snp file changes
+# Replace 200 with whatever the appropriate number of lines is for your analysis (Same with all other eQTL steps below)
+# This step is SLOW, but it is only needed for the eQTL annotation steps - you can run the main plink steps in parallel with this one
+
+sbatch -c 20 -o build_SNP_gene_map.Rout build_SNP_gene_map.R SNP=freeze2.200line.common.snp
+
+# Choose the number of permutations - 10 should be sufficient for initial analysis, 100 would be better but much slower
+
+PNUM=10
+
+# Filter to just the features worth running eQTL analysis
+# This is much less stringent than for MMC, basically just remove the RARE genes,
+# But could try being more stringent here if there are problems with low variance or low expression genes
+
+mkdir -p expression/plink
+filter_line_means.R EXPR=expression/genVar/combined_samples_gene_fpkm_VR_eQTL_F_line_means.txt FILTER=RARE,LOW MODE=eqtl PERM=$PNUM &> expression/plink/plink_setup_F.Rout
+filter_line_means.R EXPR=expression/genVar/combined_samples_gene_fpkm_VR_eQTL_M_line_means.txt FILTER=RARE,LOW MODE=eqtl PERM=$PNUM &> expression/plink/plink_setup_M.Rout
+
+# Run the main eQTL mapping and permutations (these can all be run in parallel)
+
+sbatch -o expression/plink/run_plink_F.log run_plink.sh --genotypes=freeze2.200line.common --phenotypes=expression/plink/combined_samples_gene_fpkm_VR_eQTL_F.pheno --output=expression/plink/ExprF
+sbatch -o expression/plink/run_plink_M.log run_plink.sh --genotypes=freeze2.200line.common --phenotypes=expression/plink/combined_samples_gene_fpkm_VR_eQTL_M.pheno --output=expression/plink/ExprM
+for ((perm=1;perm<=PNUM;perm++))
+do
+  mkdir -p expression/plink/Perm${perm}
+  sbatch -o expression/plink/Perm${perm}/plink_run_F.log run_plink.sh --genotypes=freeze2.200line.common --phenotypes=expression/plink/Perm${perm}/combined_samples_gene_fpkm_VR_eQTL_F.pheno --output=expression/plink/Perm${perm}/ExprF
+  sbatch -o expression/plink/Perm${perm}/plink_run_M.log run_plink.sh --genotypes=freeze2.200line.common --phenotypes=expression/plink/Perm${perm}/combined_samples_gene_fpkm_VR_eQTL_M.pheno --output=expression/plink/Perm${perm}/ExprM
+done
+
+# Combine all the qassoc files in each dir into a single file
+
+sbatch -o expression/plink/eQTL_tabulate.Rout eQTL_tabulate.R expression/plink/
+
+# Run the summarization script that builds table of all eQTLs passing 5% FDR
+# TO DO: Add optional parameter to adjust FDR and try 10% FDR?
+# TO DO: Add option or additional script to cleanup all the intermediate files
+# One thing worth saving is the collection of ALL permutation indexes (table with a column showing the permuted line order for each permutation)
+sbatch -o expression/plink/eQTL_perm_fdr.Rout eQTL_perm_fdr.R expression/plink/
+
+# Parse these eQTL results, tabulate cis vs trans eQTLs
+sbatch -c 20 -o expression/plink/eQTL_summary_F.Rout eQTL_summary.R EQTL=expression/plink/ExprF.0.05.fdr.results.txt MAP=freeze2.200line.common.snp.gene.map
+sbatch -c 20 -o expression/plink/eQTL_summary_M.Rout eQTL_summary.R EQTL=expression/plink/ExprM.0.05.fdr.results.txt MAP=freeze2.200line.common.snp.gene.map

@@ -1,0 +1,264 @@
+#
+# Example Pipeline for DGRPseq processing scripts
+#
+# Author: Logan J. Everett
+# Created: 5/6/16
+#
+# This file includes a list of top-level example commands for alignment of RNA-seq
+# from drosophila samples with mixed genetic background (DGRP, Flyland, etc.)
+# In general, you should clone a copy of the DGRPseq toolkit using git, and add that copy
+# to your path so that you can run the scripts in all projects.
+#
+# I recommend creating a separate directory for each project, customize the project_info.sh
+# file in that directory, and run all commands below within that directory.
+#
+# In general, these commands are NOT meant to be run in one long script - each step submits
+# jobs to the hyperion job queue (or any SLURM-based cluster).  So each step should be run,
+# then wait until all jobs have completed successfully before moving on to the next step.
+#
+
+
+# --- SESSION SETUP --- #
+
+# RUN THESE COMMAND WHENEVER STARTING A NEW LOGIN SESSION
+
+# Load Project-level parameters into environmental variables
+source project_info.sh
+
+# NODE USAGE - CHANGE THIS TO ADAPT TO HYPERION LOAD
+# In general, it's always good practice to exclude at least one node
+# to keep it open for other users
+# For example, exclude nodes 1 and 2 (use 3 and 4 only)
+USENODE="-x node[1,2]"
+
+# Define the batches to run alignment tasks on:
+# By default, run on all batches defined in project_info.sh
+# But if you are running the analysis piecemeal, e.g. if you already aligned some of your
+# data but then sequenced additional samples to process, then you can define a subset of
+# your samples through this variable.  All steps below that can be re-run for just the
+# new batches will use RUNBATCHES instead of ALLBATCHES
+RUNBATCHES=${ALLBATCHES[@]}
+
+
+
+# --- PRE-CHECK --- #
+
+# Make sure all raw files in all batches are present
+# NOTE: Raw Fastq files should be gzipped already!
+for BATCH in ${RUNBATCHES[@]}
+do
+  run_batch_task.sh --batch=$BATCH --task='ls -l $RAW_FASTQ_PATH/$sampleID.fastq.gz' | more
+done
+
+
+# --- STEP 1: Run fastqc on raw input sequences (OPTIONAL) --- #
+
+for BATCH in ${RUNBATCHES[@]}
+do
+  mkdir -p fastqc/$BATCH
+  logfile="fastqc/$BATCH/run_fastqc_slurm_%A_%a.out"
+  run_batch_task.sh --array --threads=1 --batch=$BATCH --sbatchopt="-o $logfile $USENODE" --task='fastqc --extract --outdir fastqc/$argBatch $RAW_FASTQ_PATH/$sampleID.fastq.gz'
+done
+
+# Summarize results
+fastqc_summary.sh fastqc
+
+
+# --- STEP 2: Run cutadapt (REQUIRED) --- #
+
+# This step trims out adapter sequences that occur when insert < read length
+
+for BATCH in ${RUNBATCHES[@]}
+do
+  mkdir -p $TRIMMED_FASTQ_PATH/$BATCH
+  logfile="$TRIMMED_FASTQ_PATH/$BATCH/run_cutadapt_slurm_%A_%a.log"
+  run_batch_task.sh --array --threads=1 --batch=$BATCH --sbatchopt="-o $logfile $USENODE" --task='run_cutadapt.sh --output=$TRIMMED_FASTQ_PATH/$argBatch --sample=$sampleID'
+done
+
+# Summarize results
+for BATCH in ${RUNBATCHES[@]}
+do
+  summarize_cutadapt.sh $TRIMMED_FASTQ_PATH/$BATCH/run_cutadapt_slurm_*.log > $TRIMMED_FASTQ_PATH/$BATCH.cutadapt.summary.txt
+done
+
+
+# --- STEP 3: Filter Ribosomal reads --- #
+
+# Align trimmed reads to rRNA sequences using BWA
+for BATCH in ${RUNBATCHES[@]}
+do
+  mkdir -p $BWA_RIBO_PATH/$BATCH
+  logfile="$BWA_RIBO_PATH/$BATCH/run_bwa_batch_ribo_slurm_%A_%a.out"
+  run_batch_task.sh --array --batch=$BATCH --sbatchopt="-o $logfile $USENODE -c $DEFAULT_THREAD_COUNT" --task='run_bwa.sh --sample=$sampleID --batch=$argBatch'
+done
+
+# Summarize how many reads aligned to each rRNA sequence
+for BATCH in ${RUNBATCHES[@]}
+do
+  logfile="$BWA_RIBO_PATH/$BATCH/run_bwa_count_slurm_%A_%a.out"
+  run_batch_task.sh --array --threads=1 --batch=$BATCH --sbatchopt="-o $logfile $USENODE" --task='bwa_count.py --verbose --nosplit bwa_rRNA/$argBatch/$sampleID/output.bam > bwa_rRNA/$argBatch/$sampleID/target_counts.txt'
+done
+
+
+# --- STEP 4: Filter Microbial Reads --- #
+
+# Filter microbial reads using fast BWA alignment against DGRP_Microbiome database
+for BATCH in ${RUNBATCHES[@]}
+do
+  mkdir -p $BWA_MICROBE_PATH/$BATCH
+  logfile="$BWA_MICROBE_PATH/$BATCH/run_bwa_microbe_slurm_%A_%a.out"
+  run_batch_task.sh --array --batch=$BATCH --sbatchopt="-o $logfile $USENODE -c $DEFAULT_THREAD_COUNT" --task='run_bwa.sh --sample=$sampleID --batch=$argBatch --mode=microbe'
+done
+
+# Count reads aligning to each microbe sequence
+for BATCH in ${RUNBATCHES[@]}
+do
+  logfile="$BWA_MICROBE_PATH/$BATCH/run_bwa_count_slurm_%A_%a.out"
+  run_batch_task.sh --array --batch=$BATCH --sbatchopt="-o $logfile $USENODE" --task='bwa_count.py --verbose --nosplit bwa_microbe/$argBatch/$sampleID/output.bam > bwa_microbe/$argBatch/$sampleID/target_counts.txt'
+done
+
+
+# --- STEP 5: Filter Repeat Element Reads --- #
+
+# BWA Alignment of reads against RepBase:
+for BATCH in ${RUNBATCHES[@]}
+do
+  mkdir -p $BWA_REPEAT_PATH/$BATCH
+  logfile="$BWA_REPEAT_PATH/$BATCH/run_bwa_repeat_slurm_%A_%a.out"
+  run_batch_task.sh --array --batch=$BATCH --sbatchopt="-o $logfile $USENODE -c $DEFAULT_THREAD_COUNT" --task='run_bwa.sh --sample=$sampleID --batch=$argBatch --mode=repeat'
+done
+
+# Count reads aligning to each repeat sequence
+for BATCH in ${RUNBATCHES[@]}
+do
+  logfile="$BWA_REPEAT_PATH/$BATCH/run_bwa_count_slurm_%A_%a.out"
+  run_batch_task.sh --array --batch=$BATCH --sbatchopt="-o $logfile $USENODE" --task='bwa_count.py --verbose --nosplit bwa_repeat/$argBatch/$sampleID/output.bam > bwa_repeat/$argBatch/$sampleID/target_counts.txt'
+done
+
+# (OPTIONAL) Run fastqc on the final reads meant for genomic alignment
+for BATCH in ${RUNBATCHES[@]}
+do
+  mkdir -p fastqc_repfiltered/$BATCH
+  logfile="fastqc_repfiltered/$BATCH/run_fastqc_slurm_%A_%a.out"
+  run_batch_task.sh\
+   --array\
+   --threads=1\
+   --batch=$BATCH\
+   --sbatchopt="-o $logfile $USENODE "\
+   --task='fastqc --extract --outdir fastqc_repfiltered/$argBatch $REPEAT_FILTERED_PATH/$argBatch/${sampleID}_filtered.fastq.gz'
+done
+
+fastqc_summary.sh fastqc_repfiltered
+
+
+# --- STEP 6: Align to Reference Genome using STAR --- #
+
+# Align the fully filtered reads to reference genome using STAR
+for BATCH in ${RUNBATCHES[@]}
+do
+  mkdir -p $STAR_PATH/$BATCH
+  logfile="$STAR_PATH/$BATCH/run_star_batch_slurm_%A_%a.log"
+  run_batch_task.sh\
+   --array\
+   --batch=$BATCH\
+   --sbatchopt="-o $logfile $USENODE -c $DEFAULT_THREAD_COUNT"\
+   --task='run_star.sh --sample=$sampleID --batch=$argBatch --lane=$lane --name=$sampleName --flowcell=$flowcell'
+done
+
+# Compress the Unmapped.out.mate1 files
+for BATCH in ${RUNBATCHES[@]}
+do
+  nohup gzip $STAR_PATH/$BATCH/*/Unmapped.out.mate1 &
+done
+
+
+# --- STEP 7: Count Reads in Known Genes using HTSeq-Count --- #
+
+# HTSeq-count: Assemble individual sample read counts in all known gene features
+# NEW: The --overwrite parameter allows the HTSeq-count script to overwrite existing count files, 
+#      this is helpful if re-running with a new GTF file.
+#      Remove this parameter from the command below if you don't want to accidentally overwrite existing files
+
+for BATCH in ${RUNBATCHES[@]}
+do
+  mkdir -p $HTSEQ_COUNT_PATH/$BATCH
+  logfile="$HTSEQ_COUNT_PATH/$BATCH/run_htseq_batch_star_slurm_%A_%a.log"
+  run_batch_task.sh --array --batch=$BATCH --sbatchopt="-o $logfile $USENODE -c 1" --task='run_htseq.sh --sample=$sampleID --batch=$argBatch --suffix=STAR_counts --overwrite'
+done
+
+# --- STEP 8: QC/Validation --- #
+
+# Run various QC steps at this stage
+
+# Collect QC stats for trimmed fastq.gz files
+for BATCH in ${RUNBATCHES[@]}
+do
+  # Trimmed fastq files
+  outfile="$TRIMMED_FASTQ_PATH/$BATCH/fastq.gz.stats"
+  errfile="$TRIMMED_FASTQ_PATH/$BATCH/fastq.gz.stats.err"
+  sbatch -o $outfile -e $errfile $USENODE file_stats.sh $TRIMMED_FASTQ_PATH/$BATCH/*.fastq.gz
+  # Ribo-filtered fastq files
+  outfile="$RIBO_FILTERED_PATH/$BATCH/fastq.gz.stats"
+  errfile="$RIBO_FILTERED_PATH/$BATCH/fastq.gz.stats.err"
+  sbatch -o $outfile -e $errfile $USENODE file_stats.sh $RIBO_FILTERED_PATH/$BATCH/*.fastq.gz
+  # Microbe-filtered fastq files
+  outfile="$MICROBE_FILTERED_PATH/$BATCH/fastq.gz.stats"
+  errfile="$MICROBE_FILTERED_PATH/$BATCH/fastq.gz.stats.err"
+  sbatch -o $outfile -e $errfile $USENODE file_stats.sh $MICROBE_FILTERED_PATH/$BATCH/*.fastq.gz
+  # Repeat-filtered fastq files
+  outfile="$REPEAT_FILTERED_PATH/$BATCH/fastq.gz.stats"
+  errfile="$REPEAT_FILTERED_PATH/$BATCH/fastq.gz.stats.err"
+  sbatch -o $outfile -e $errfile $USENODE file_stats.sh $REPEAT_FILTERED_PATH/$BATCH/*.fastq.gz
+done
+
+# After all jobs above finish, run these to combine into final tables
+cat $TRIMMED_FASTQ_PATH/*/fastq.gz.stats > $TRIMMED_FASTQ_PATH/fastq.gz.stats
+cat $RIBO_FILTERED_PATH/*/fastq.gz.stats > $RIBO_FILTERED_PATH/fastq.gz.stats
+cat $MICROBE_FILTERED_PATH/*/fastq.gz.stats > $MICROBE_FILTERED_PATH/fastq.gz.stats
+cat $REPEAT_FILTERED_PATH/*/fastq.gz.stats > $REPEAT_FILTERED_PATH/fastq.gz.stats
+
+
+
+# TO DO: The current version of this script tries to parse out sex and line info,
+# Which does not work on sample names for this project and is something that will usually be project specific
+# 1) Do we actually need to do that parsing for this script? If not, just take it out
+# 2) If so, then that information should probably go in some other sample.info table that is more flexible
+# Collect sample stats
+sbatch -o collect_sample_QC_stats.Rout $USENODE collect_sample_QC_stats.R ${ALLBATCHES[@]}
+
+# Generate plots of sample stats
+# TO DO: Need to automate the procedure of setting ylim on most of these plots - it should be fixed across all batch plots but it can be dynamic for the overall project
+sbatch -o plot_sample_QC_stats.Rout $USENODE plot_sample_QC_stats.R
+
+# Parse info out of sample names
+Rscript parse_sample_names.R &> parse_sample_names.Rout
+
+# Count observed alleles at all known SNPs
+for BATCH in ${RUNBATCHES[@]}
+do
+  mkdir -p $PILEUP_PATH/$BATCH/
+  logfile="$PILEUP_PATH/$BATCH/run_count_alleles_slurm_%A_%a.log"
+  run_batch_task.sh --array --batch=$BATCH --sbatchopt="-o $logfile $USENODE" --task='count_alleles_rna.sh --sample=$sampleID --outpath='$PILEUP_PATH/$BATCH/' --header '$STAR_PATH/$BATCH/'$sampleID/Aligned.sortedByCoord.out.bam'
+done
+
+# Run the genotyping script individually on each batch
+for BATCH in ${RUNBATCHES[@]}
+do
+  logfile="$PILEUP_PATH/$BATCH/validate_line_labels.Rout"
+  sbatch -o $logfile $USENODE validate_line_labels.R $BATCH
+done
+
+# Draw genotype error plots across all batches
+genotype_validation_plots.R ${ALLBATCHES[@]} &> genotype_validation_plots.Rout
+
+# Sex validation script using PCA and LDA
+validate_sex_labels.R ${ALLBATCHES[@]} &> validate_sex_labels.Rout
+
+# Build master sample table for downstream processing
+# THIS SCRIPT MUST RUN TO COMPLETION BEFORE STARTING NEXT SCRIPTS
+sbatch -o build_sample_table.Rout build_sample_table.R ${ALLBATCHES[@]}
+
+# Aggregate gene counts from HTSeq-count, repbase sequences, and microbiomes by library and sample
+# These can all be run in parallele
+sbatch -o build_count_table.Rout build_count_table.R
+

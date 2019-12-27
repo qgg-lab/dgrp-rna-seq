@@ -1,0 +1,93 @@
+--------------------
+      Overview     
+--------------------
+
+This document explains how to install other tools that are required for the pipeline
+
+These instructions have been tailored to Hyperion, that is tools that are installed for everyone are not given much attention here.
+
+For everything else, tools will be installed in the individual user directory, instructions should work for the environment on Hyperion.
+
+
+
+---------------------
+    Install Pysam    
+---------------------
+
+
+First, get the pysam v0.8.0 source code - on Hyperion you can just copy the file from Logan's directory:
+
+cp ~ljeveret/Tools/pysam-0.8.0.tar.gz .
+
+Or, if this file goes missing, download v0.8.0 here: https://pypi.python.org/pypi/pysam/0.8.0
+
+NOTE: Yes, this is an older version of pysam, but newer versions are not compatible with HTSeq or certain scripts in the pipeline, so get THIS version
+
+On Hyperion, navigate to the wherever you put the pysam-0.8.0.tar.gz file, and then run the following commands (Make sure to check the output of each command for errors before proceeding!):
+
+tar -xzf pysam-0.8.0.tar.gz
+cd pysam-0.8.0
+python setup.py build
+python setup.py install --user
+
+Now test if pysam is installed by running the following command to open a python session:
+
+/usr/bin/python
+
+Then in the python session, run this command:
+
+import pysam
+
+You should not get any error message when running this command.  This next command will check the pysam version:
+
+print pysam.__version__
+
+This should tell you the version is 0.8.0
+(Hit Ctrl+D to exit out of Python session)
+
+
+
+---------------------
+    Install HTSeq    
+---------------------
+
+Download HTSeq-0.6.1p1.tar.gz from this page: https://pypi.python.org/pypi/HTSeq
+
+Upload the HTSeq-0.6.1p1.tar.gz file to your user directory and then run the following commands:
+
+tar -xzf HTSeq-0.6.1p1.tar.gz
+cd HTSeq-0.6.1p1
+python setup.py install --user
+
+After install, you should see a program called "htseq-count" in your ~/.local/bin/ directory.
+
+Also make sure the following line is somewhere in your .bash_profile file:
+
+PATH=$PATH:$HOME/.local/bin
+
+
+
+---------------------
+    Install STAR    
+---------------------
+
+The easiest way is to create a soft-link to the installation in Logan's directory, by running the following commands:
+
+cd ~/.local/bin
+ln -s ~ljeveret/Tools/STAR-STAR_2.4.0f1/bin/Linux_x86_64_static/STAR
+
+As noted above, this requires the following line (just once) somewhere in your .bash_profile file:
+
+PATH=$PATH:$HOME/.local/bin
+
+
+
+---------------------
+      Install R      
+---------------------
+
+Again, easiest thing to do is just link to my installation of R, which has all required packages installed already.  
+
+Just add the following to your .bash_profile file:
+
+PATH=~ljeveret/Tools/R-3.1.1/bin:$PATH
