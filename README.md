@@ -15,3 +15,7 @@ The complete set of commands is in the file [known_novel_genes_analysis.sh](quan
 ## eQTL mapping
 
 The eQTL mapping uses PLINK and summarizes results (calculating empirical FDR) using [empFDR.R](eqtl/empFDR.R). The results are further refined by a forward model selection implemented in [modelSelect.bash](eqtl/modelSelect.bash).
+
+## Characterization of NTR
+
+Scripts and commands in the directory [ntr](ntr/)
